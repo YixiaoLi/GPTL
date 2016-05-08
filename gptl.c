@@ -135,9 +135,9 @@ static int is_onlist (const Timer *, const Timer *);
 static char *methodstr (Method);
 
 /* Prototypes from previously separate file threadutil.c */
-static int threadinit (void);                    /* initialize threading environment */
-static void threadfinalize (void);               /* finalize threading environment */
-static inline int get_thread_num (void);         /* get 0-based thread number */
+static int threadinit (void);             /* initialize threading environment */
+static void threadfinalize (void);        /* finalize threading environment */
+static int get_thread_num (void);         /* get 0-based thread number */
 
 /* These are the (possibly) supported underlying wallclock timers */
 static inline double utr_nanotime (void);
@@ -3412,13 +3412,37 @@ static void threadfinalize ()
 **   GPTLthreadid_omp: Our thread id added to list on 1st call
 **
 ** Return value: thread number (success) or GPTLerror (failure)
+**   5/8/16: Modified to enable 2-level OMP nesting: Fold combination of current and parent
+**   thread info into a single index
 */
-static inline int get_thread_num (void)
+static int get_thread_num (void)
 {
-  int t;        /* thread number */
+  int t;               /* thread number */
+  int lvl;             /* nest level: Currently only 2 nesting levels supported */
+  int myid;            /* my thread id */
+  int parentid;        /* thread number of parent team */
+  int my_nthreads;     /* number of threads in the parent team */
   static const char *thisfunc = "get_thread_num";
 
-  if ((t = omp_get_thread_num ()) >= maxthreads)
+  if (omp_get_nested ()) {         /* nesting is "enabled", though not necessarily active */
+    lvl = omp_get_active_level (); /* lvl=2 => inside 2 #pragma omp regions */
+    if (lvl > 2)
+      return GPTLerror ("OMP %s: GPTL currently supports only 2 nested OMP levels\n", thisfunc);
+    if (lvl > 1) {
+      /* Create a unique id for indexing into singly-dimensioned thread array */
+      parentid        = omp_get_ancestor_thread_num (lvl-1);
+      my_nthreads     = omp_get_team_size(lvl);
+      myid            = omp_get_thread_num ();
+      t               = parentid*my_nthreads + myid;
+    } else {
+      /* Even though nesting is enabled, we are not in a doubly nested region */
+      t = omp_get_thread_num ();
+    }
+  } else {
+    t = omp_get_thread_num ();
+  }
+
+  if (t >= maxthreads)
     return GPTLerror ("OMP %s: returned id=%d exceeds maxthreads=%d\n", thisfunc, t, maxthreads);
 
   /* If our thread number has already been set in the list, we are done */
@@ -3566,7 +3590,7 @@ static void threadfinalize ()
 **
 ** Return value: thread number (success) or GPTLerror (failure)
 */
-static inline int get_thread_num (void)
+static int get_thread_num (void)
 {
   int t;                   /* logical thread number, defined by array index of found GPTLthreadid */
   pthread_t mythreadid;    /* thread id from pthreads library */
@@ -3710,7 +3734,7 @@ void threadfinalize ()
   GPTLthreadid = -1;
 }
 
-static inline int get_thread_num ()
+static int get_thread_num ()
 {
 #ifdef HAVE_PAPI
   static const char *thisfunc = "get_thread_num";
